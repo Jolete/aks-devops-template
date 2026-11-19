@@ -1,0 +1,83 @@
+x-example: &example
+  build: .
+
+x-http-health: &http-health
+  test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8080/healthz', timeout=2).close()"]
+  interval: 2s
+  timeout: 3s
+  retries: 10
+
+x-consumer: &consumer
+  <<: *example
+  environment:
+    AMQP_URL: amqp://lab:lab@rabbitmq:5672/%2F
+  depends_on:
+    rabbitmq:
+      condition: service_healthy
+
+services:
+  rabbitmq:
+    image: rabbitmq:4.4.1
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: lab
+      RABBITMQ_DEFAULT_PASS: lab
+    volumes:
+      - broker-state:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  api:
+    <<: *example
+    ports:
+      - "127.0.0.1:${EXAMPLE_PORT:-8081}:8080"
+    volumes:
+      - api-state:/data
+    healthcheck: *http-health
+
+  publisher:
+    <<: *consumer
+    command: ["python", "worker.py", "publisher"]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - api-state:/data
+
+  saga:
+    <<: *consumer
+    command: ["python", "worker.py", "saga"]
+    volumes:
+      - saga-state:/data
+
+  fulfillment:
+    <<: *consumer
+    command: ["python", "worker.py", "fulfillment"]
+    environment:
+      AMQP_URL: amqp://lab:lab@rabbitmq:5672/%2F
+      LAB_RETRY_ONCE: ${LAB_RETRY_ONCE:-}
+      LAB_REDELIVER_ONCE: ${LAB_REDELIVER_ONCE:-}
+    volumes:
+      - fulfillment-state:/data
+
+  projection:
+    <<: *consumer
+    command: ["python", "worker.py", "projection"]
+    ports:
+      - "127.0.0.1:${EXAMPLE_PROJECTION_PORT:-8082}:8080"
+    volumes:
+      - projection-state:/data
+    healthcheck: *http-health
+
+volumes:
+  broker-state:
+  api-state:
+  saga-state:
+  fulfillment-state:
+  projection-state:

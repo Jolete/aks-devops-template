@@ -1,0 +1,73 @@
+name: Lab checks
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Test Compose
+        run: |
+          docker compose up -d --build --wait
+          ./scripts/smoke.sh
+      - name: Collect Compose logs and stop containers
+        if: always()
+        run: |
+          docker compose logs demo || true
+          docker compose down
+      - name: Install kind
+        run: |
+          go install sigs.k8s.io/kind@v0.33.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Test Kubernetes
+        run: |
+          kubectl_lab() {
+            kubectl --context kind-devops-lab --namespace devops-lab "$@"
+          }
+
+          check_release() (
+            expected_version=$1
+            kubectl_lab rollout status deployment/demo --timeout=120s
+            kubectl --context kind-devops-lab --namespace devops-lab port-forward --address 127.0.0.1 service/demo 8080:8080 > "$RUNNER_TEMP/port-forward.log" 2>&1 &
+            forward_pid=$!
+            trap 'kill "$forward_pid" 2>/dev/null || true; wait "$forward_pid" 2>/dev/null || true' EXIT
+            curl --fail --silent --show-error --max-time 5 --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/healthz
+            ./scripts/smoke.sh http://127.0.0.1:8080 "$expected_version"
+          )
+
+          kind create cluster --name devops-lab --wait 120s
+          kind load docker-image --name devops-lab devops-demo:local
+          kubectl --context kind-devops-lab apply -f k8s/
+          check_release local
+          kubectl_lab set env deployment/demo APP_VERSION=v2
+          check_release v2
+          kubectl_lab rollout undo deployment/demo
+          check_release local
+      - name: Collect Kubernetes logs and stop cluster
+        if: always()
+        run: |
+          if command -v kind >/dev/null; then
+            cat "$RUNNER_TEMP/port-forward.log" 2>/dev/null || true
+            kubectl --context kind-devops-lab -n devops-lab get pods || true
+            kubectl --context kind-devops-lab -n devops-lab get events --sort-by=.lastTimestamp || true
+            kubectl --context kind-devops-lab -n devops-lab logs -l app=demo --prefix || true
+            kind delete cluster --name devops-lab
+          fi
+  example:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Test the stack example with Compose
+        run: ./example/smoke.sh

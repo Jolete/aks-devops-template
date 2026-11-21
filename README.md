@@ -13,6 +13,8 @@ Comprueba `docker version` y `docker compose version` desde la misma terminal en
 
 ## Primeros pasos
 
+Para preparar la sesión, consulta el [resumen de Docker](docs/docker-resumen.md), el [resumen de k3s](docs/k3s-resumen.md) y la [guía de CD local con runner propio](docs/cd-local.md).
+
 ```bash
 docker compose up -d --build --wait
 ./scripts/smoke.sh
